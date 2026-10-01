@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 
 from engine import FuturesIntradayScanner
+from db_sync import sync_master_csv_to_postgres
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -271,5 +272,7 @@ def generate_daily_reports(
 if __name__ == "__main__":
     logging.info("Refreshing ES futures data from source before generating reports...")
     FuturesIntradayScanner().process_and_backtest()
+
+    sync_master_csv_to_postgres("output/ES_continuous_master_1m.csv")
 
     generate_daily_reports()

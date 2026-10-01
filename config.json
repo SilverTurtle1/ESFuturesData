@@ -1,7 +1,7 @@
 
 {
     "start_date": "2025-01-01",
-    "end_date": "2026-08-22",
+    "end_date": "2026-10-02",
     "analysis_timeframe": "30min",
     "session_hours": {
         "asia": { "start_hour": 15, "start_min": 0, "end_hour": 0, "end_min": 0 },
