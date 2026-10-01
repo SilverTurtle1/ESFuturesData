@@ -110,11 +110,16 @@ class MyRESTClient(RESTClient):
 
 
 
-start = datetime(2022,7,1)
-pd.set_option('display.max_columns', None)
-client = MyRESTClient()
-#df = client.get_bars(market='crypto', ticker='X:BTCUSD', from_=start)
-df = client.get_bars(market='stocks', ticker='SPY',multiplier=30,timespan='minute', from_=start)
-print("Here2")
-print(df)
-print("Here3")
+def main():
+    start = datetime(2022,7,1)
+    pd.set_option('display.max_columns', None)
+    client = MyRESTClient()
+    #df = client.get_bars(market='crypto', ticker='X:BTCUSD', from_=start)
+    df = client.get_bars(market='stocks', ticker='SPY',multiplier=30,timespan='minute', from_=start)
+    print("Here2")
+    print(df)
+    print("Here3")
+
+
+if __name__ == "__main__":
+    main()
