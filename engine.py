@@ -145,11 +145,13 @@ class FuturesIntradayScanner:
                 return None
 
             if in_vol.get(prior, 0.0) > out_vol.get(prior, 0.0):
-                sessions_after_cme = (trade_date - out_info["cme_roll_date"]).days
+                crossover_days = (prior - out_info["cme_roll_date"]).days
+                owned_days = (trade_date - out_info["cme_roll_date"]).days
                 logging.info(f"{label}: {in_info['ticker']} out-traded {out_info['ticker']} on {prior} "
-                             f"({in_vol.get(prior, 0.0):,.0f} vs {out_vol.get(prior, 0.0):,.0f}); switching at "
-                             f"{exit_ts} ({sessions_after_cme} calendar days after CME roll date "
-                             f"{out_info['cme_roll_date']}).")
+                             f"({in_vol.get(prior, 0.0):,.0f} vs {out_vol.get(prior, 0.0):,.0f}), "
+                             f"{crossover_days} calendar days after the CME roll date {out_info['cme_roll_date']}. "
+                             f"Switching at {exit_ts}; {in_info['ticker']} fully owns the session from "
+                             f"{trade_date} ({owned_days} calendar days after the CME roll date).")
                 return exit_ts
 
         exit_ts = out_info["latest_exit"]
