@@ -11,9 +11,10 @@ session-based reports (value area, POC, session highs/lows) on top of it.
   `<TICKER>_raw_1m_bars.csv` and only requesting the missing date delta on
   each run), welds them into one continuous series, repairs volume/session
   gaps, and writes the result to `output/ES_continuous_master_1m.csv`. The
-  series rolls to the next contract at the first Globex session after its
-  volume overtakes the outgoing contract's, never before the CME roll date
-  (the Thursday 8 days before expiration) and no later than expiration.
+  series rolls to the next contract at the open of the first Globex session in
+  which its volume overtakes the outgoing contract's (that whole session is on
+  the new contract), never before the CME roll date (the Thursday 8 days before
+  expiration) and no later than expiration.
 - **`main.py`** orchestrates a full run: refresh data via `engine.py` → sync
   the master series into the shared `market_data` Postgres database
   (`db_sync.py`) → generate the two daily reports (`ES_daily_value_area.csv`,

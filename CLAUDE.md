@@ -50,16 +50,18 @@ directly — keep it that way rather than adding new direct reads elsewhere.
 ## Things that look like bugs but aren't
 
 - **Contract rolls follow volume, not the calendar.** `engine.py` switches to
-  the next contract at the open (15:00 PT) of the first Globex session after
-  a full session where its volume exceeded the outgoing contract's. The CME
-  roll date (Thursday 8 days before expiration) is only the *earliest* allowed
-  switch, because on this data the incoming contract holds just 3-10% of volume
-  on that date. Each outgoing contract is therefore fetched through its
-  expiration, and the cap is the expiration-day session (forced switch plus a
-  warning if no crossover appeared). Switch times depend only on sessions
-  before the switch, so an already-made roll never changes when new data
-  arrives; a roll still in progress stays on the outgoing contract until the
-  crossover shows up.
+  the next contract at the 15:00 PT open of the first Globex session in which
+  its full-session volume exceeds the outgoing contract's, so the crossover
+  session itself is built entirely from the new contract (matching how
+  continuous charts label the roll day). The CME roll date (Thursday 8 days
+  before expiration) is only the *earliest* allowed switch, because on this
+  data the incoming contract holds just 3-10% of volume on that date. Each
+  outgoing contract is therefore fetched through its expiration, and the cap
+  is the expiration-day session (forced switch plus a warning if no crossover
+  appeared). A roll is decided once the crossover session is complete and
+  never changes after that. That is hindsight within the crossover day for
+  intraday use (its bars stay on the outgoing contract until the session
+  ends), but fine for the next-morning batch.
 - **Daily reports rebuild from scratch every run.** `generate_daily_reports()`
   re-reads the entire master CSV and recomputes every day's stats on each
   call — there's no incremental/append path. Run time scales with how much

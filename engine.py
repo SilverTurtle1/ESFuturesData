@@ -13,6 +13,7 @@ PT = "America/Los_Angeles"
 QUARTER_CODES = {3: "H", 6: "M", 9: "U", 12: "Z"}
 ROLL_DAYS_BEFORE_EXPIRATION = 8
 SESSION_OPEN_HOUR_PT = 15
+SESSION_LAST_BAR_PT = (13, 59)
 SEAM_PAD_DAYS = 2
 ROLL_DATA_GAP_DAYS = 7
 
@@ -120,38 +121,47 @@ class FuturesIntradayScanner:
         trade_dates = (df.index + pd.to_timedelta((df.index.hour >= 15).astype(int), unit="D")).date
         return df["Volume"].groupby(trade_dates).sum()
 
+    @staticmethod
+    def _session_last_bar(trade_date: date) -> pd.Timestamp:
+        """Start of the last 1-minute bar of a trade date's session (the 14:00 PT maintenance halt follows)."""
+        return pd.Timestamp(year=trade_date.year, month=trade_date.month, day=trade_date.day,
+                            hour=SESSION_LAST_BAR_PT[0], minute=SESSION_LAST_BAR_PT[1], tz=PT)
+
     def _find_roll_exit(self, out_info: dict, in_info: dict, out_df: pd.DataFrame, in_df: pd.DataFrame):
         """
         Finds when the series leaves the outgoing contract: the open of the first Globex session, on or
-        after the CME roll date, whose prior full session traded more volume in the incoming contract
-        than the outgoing one. Every session is therefore built from a single contract, and the switch
-        follows where traders actually moved rather than the calendar. If no crossover appears by the
-        expiration-day session, switches there and warns. Returns None when the available data ends
-        before a decision can be made (e.g. the config range ends mid-roll).
+        after the CME roll date, in which the incoming contract traded more volume than the outgoing one.
+        That whole session is built from the incoming contract, which matches how continuous charts label
+        the roll day, so its value area is in the same prices as the chart it is plotted on. Judging a
+        session needs its full volume, so a roll is only decided once the session is complete. That is
+        fine for a batch run the morning after, but it is hindsight for any live intraday use: the
+        crossover day's bars stay on the outgoing contract until the session ends, then switch. If no
+        crossover appears before the expiration-day session, switches at that session's open and warns.
+        Returns None when the available data ends before a decision can be made (e.g. the config range
+        ends mid-roll).
         """
         label = f"Roll {out_info['ticker']} -> {in_info['ticker']}"
         out_vol, in_vol = self._session_volumes(out_df), self._session_volumes(in_df)
         trade_dates = sorted(set(out_vol.index) | set(in_vol.index))
         data_end = out_df.index.max()
 
-        for prior, trade_date in zip(trade_dates, trade_dates[1:]):
-            if trade_date < out_info["cme_roll_date"] or trade_date > out_info["expiration"]:
+        for trade_date in trade_dates:
+            if trade_date < out_info["cme_roll_date"] or trade_date >= out_info["expiration"]:
                 continue
 
-            exit_ts = self._session_open(trade_date)
-            if exit_ts > data_end:
+            if data_end < self._session_last_bar(trade_date):
                 logging.info(f"{label}: no volume crossover yet within the available data; staying on "
                              f"{out_info['ticker']}.")
                 return None
 
-            if in_vol.get(prior, 0.0) > out_vol.get(prior, 0.0):
-                crossover_days = (prior - out_info["cme_roll_date"]).days
-                owned_days = (trade_date - out_info["cme_roll_date"]).days
-                logging.info(f"{label}: {in_info['ticker']} out-traded {out_info['ticker']} on {prior} "
-                             f"({in_vol.get(prior, 0.0):,.0f} vs {out_vol.get(prior, 0.0):,.0f}), "
-                             f"{crossover_days} calendar days after the CME roll date {out_info['cme_roll_date']}. "
-                             f"Switching at {exit_ts}; {in_info['ticker']} fully owns the session from "
-                             f"{trade_date} ({owned_days} calendar days after the CME roll date).")
+            if in_vol.get(trade_date, 0.0) > out_vol.get(trade_date, 0.0):
+                exit_ts = self._session_open(trade_date)
+                days_after_cme = (trade_date - out_info["cme_roll_date"]).days
+                logging.info(f"{label}: {in_info['ticker']} out-traded {out_info['ticker']} on {trade_date} "
+                             f"({in_vol.get(trade_date, 0.0):,.0f} vs {out_vol.get(trade_date, 0.0):,.0f}), "
+                             f"{days_after_cme} calendar days after the CME roll date {out_info['cme_roll_date']}. "
+                             f"Switching at {exit_ts}, the open of that session, so {in_info['ticker']} owns "
+                             f"it from the start.")
                 return exit_ts
 
         exit_ts = out_info["latest_exit"]
