@@ -1,14 +1,12 @@
 """
 Tests the market-profile "B period engulfs A period" concept: B period
 (07:00-07:30 PT, immediately following A period 06:30-07:00 PT) makes both a
-higher high AND a lower low than A period -- classic early range-expansion
+higher high AND a lower low than A period -- a classic early range-expansion
 signal associated with trend/non-balance days.
 
-Two questions:
- 1. Descriptively: do engulf days show bigger/trendier RTH sessions?
- 2. Practically: does "B engulfed A" act as a regime filter that improves
-    the already-validated level-breakout focus list (from earlier) when
-    applied ON TOP of it?
+Question: do engulf days show bigger, trendier RTH sessions than other days?
+Compares RTH range and trendiness (net move as a share of the range) across
+engulf and non-engulf days.
 """
 import sys
 sys.path.insert(0, '.')

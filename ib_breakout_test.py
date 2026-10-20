@@ -1,13 +1,11 @@
 """
-Tests the Initial Balance (IB) breakout concept shown in the dashboard:
-IB = combined A+B period range (06:30-07:30 PT, the first hour of RTH).
-Signal: does the FIRST 30-minute period after IB closes (07:30-08:00 PT)
-close beyond the IB high (bull) or IB low (bear)? That's the "Expansion"
-confirmation in the dashboard's language.
+Tests an Initial Balance (IB) breakout. IB is the combined A+B period range
+(06:30-07:30 PT, the first hour of RTH). The signal is whether the first
+30-minute period after IB closes (07:30-08:00 PT) closes beyond the IB high
+(bullish) or the IB low (bearish), a sign the range is expanding.
 
-Tests both: (1) is this tradeable on its own, and (2) does it work as a
-regime filter that improves the existing level-breakout focus list on
-days where it fires, matching direction.
+Entries are taken at 08:00 PT, the close of that period, and scored with the
+triple-barrier tester (20-point target / 7-point stop, and 10 / 7).
 """
 import sys
 sys.path.insert(0, '.')

@@ -25,9 +25,9 @@ session-based reports (value area, POC, session highs/lows) on top of it.
   same logic `main.py` uses for the reports).
 - `level_interactions.py`, `triple_barrier.py`, `weekly_value_area.py`,
   `ib_breakout_test.py` and `b_engulfs_a_test.py` are standalone research
-  scripts built on the master dataset. Indicator logic and the strategy
-  research built on it live in a separate private repository, so this project
-  stays solely about the ES data.
+  scripts built on the master dataset. Indicator logic and most of the
+  strategy research live in a separate private repository; these example
+  backtests are what stays here, so the project remains focused on the ES data.
 - `Main_OLD.py` / `Rest_Test.py` are earlier, now-unused exploratory scripts
   against the `polygon` client package — kept for reference.
 
