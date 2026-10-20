@@ -18,3 +18,4 @@ output
 .claude/settings.local.json
 
 .DS_Store
+SPX30M*.csv

@@ -100,7 +100,7 @@ The `output/` folder syncs to a shared Google Drive folder, so the reports are a
 
 ## 7. Research built on this data
 
-The master series and daily levels feed a set of research scripts. Two are reusable frameworks rather than one-off tests:
+The master series and daily levels feed a set of research scripts. Indicator logic and the strategy research built on it live in a separate private repository, so this project stays solely about the ES data. Two of the scripts kept here are reusable frameworks rather than one-off tests:
 
 - **`level_interactions.py`** catalogs key levels (session highs and lows, A-period halfback, prior-day RTH high and low, prior-day and prior-week value areas). It builds a no-lookahead validity table, so each level is only used from the moment it was actually knowable. It then classifies every first touch as a rejection, a breakout, or chop, and records forward returns and maximum favorable and adverse excursion at several horizons.
 - **`triple_barrier.py`** scores any set of candidate entries by walking forward on 1-minute bars to see whether the profit target or the stop is hit first. When a single bar spans both, the outcome is resolved conservatively as a loss, because OHLC bars don't reveal the order of moves within the bar.

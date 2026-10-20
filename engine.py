@@ -5,7 +5,6 @@ import logging
 import requests
 import pandas as pd
 from datetime import date, datetime, timedelta
-from indicators import calculate_custom_tv_indicator
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -24,7 +23,7 @@ class FuturesIntradayScanner:
         self.config_filename = "config.json"
 
         # 1. Load configuration parameters
-        self.api_key, self.start_date, self.end_date, self.timeframe = self._load_configurations()
+        self.api_key, self.start_date, self.end_date = self._load_configurations()
 
         # 2. Map out the execution timeline sequence of contracts
         self.contract_schedule = self._build_contract_schedule(self.start_date, self.end_date)
@@ -36,7 +35,7 @@ class FuturesIntradayScanner:
                      f"{[c['ticker'] for c in self.contract_schedule]}")
 
     def _load_configurations(self):
-        """Extracts historical boundaries and analysis timeframes from config.json.
+        """Extracts the historical date range from config.json.
         The API key comes from local_settings.py (gitignored) instead, so it never lands in version control."""
         from local_settings import polygon as _local_settings
         api_key = _local_settings["api_key"]
@@ -45,17 +44,16 @@ class FuturesIntradayScanner:
             logging.warning("config.json not found! Instantiating template file.")
             defaults = {
                 "start_date": "2026-01-02",
-                "end_date": "2026-07-04",
-                "analysis_timeframe": "30min"
+                "end_date": "2026-07-04"
             }
             with open(self.config_filename, "w") as f:
                 json.dump(defaults, f, indent=4)
-            return api_key, defaults["start_date"], defaults["end_date"], defaults["analysis_timeframe"]
+            return api_key, defaults["start_date"], defaults["end_date"]
 
         with open(self.config_filename, "r") as f:
             config = json.load(f)
 
-        return api_key, config.get("start_date"), config.get("end_date"), config.get("analysis_timeframe", "30min")
+        return api_key, config.get("start_date"), config.get("end_date")
 
     @staticmethod
     def _third_friday(year: int, month: int) -> date:
@@ -358,7 +356,7 @@ class FuturesIntradayScanner:
             return df_cache
 
     def process_and_backtest(self) -> pd.DataFrame:
-        """Gathers data across all required quarterly contracts, welds them together seamlessly, and runs indicators."""
+        """Gathers data across all required quarterly contracts, welds them together seamlessly, and saves the master timeline."""
         frames = {}
 
         # Pull each contract sequentially, from before its earliest possible entry through its expiration
@@ -427,40 +425,4 @@ class FuturesIntradayScanner:
         logging.info(f"Disk Persistence: Saving clean, gapless active market timeline to **{master_csv_name}**...")
         raw_df.reset_index().rename(columns={"index": "Timestamp"}).to_csv(master_csv_name, index=False)
 
-        # RESAMPLE INTO TIMEFRAME
-        logging.info(f"Dynamically resampling collective dataset to custom timeframe: {self.timeframe}")
-        resampled_df = (
-            raw_df.resample(self.timeframe)
-            .agg({
-                "Open": "first",
-                "High": "max",
-                "Low": "min",
-                "Close": "last",
-                "Volume": "sum",
-            })
-            .dropna()
-        )
-
-        req_start_tz = pd.to_datetime(self.start_date).tz_localize("America/Los_Angeles")
-        req_end_tz = pd.to_datetime(self.end_date).tz_localize("America/Los_Angeles").replace(hour=23, minute=59,
-                                                                                              second=59)
-        analysis_df = resampled_df[(resampled_df.index >= req_start_tz) & (resampled_df.index <= req_end_tz)]
-
-        if len(analysis_df) < 30:
-            logging.warning(f"Insufficient candles ({len(analysis_df)}) generated at the {self.timeframe} level.")
-            return pd.DataFrame()
-
-        logging.info("Applying JM -TRM calculations to collective timeline...")
-        processed_df = calculate_custom_tv_indicator(analysis_df)
-
-        events_df = processed_df[
-            (processed_df['Failed_Breakdown'] == True) |
-            (processed_df['Failed_Breakout'] == True) |
-            (processed_df['Signal_Breakout'] == True) |
-            (processed_df['Signal_Level_Loss'] == True)
-            ]
-
-        logging.info(f"Analysis complete. Found {len(events_df)} anomalies on the {self.timeframe} timeframe.")
-        return events_df[
-            ['Open', 'High', 'Low', 'Close', 'clr', 'Failed_Breakdown', 'Failed_Breakout', 'Signal_Breakout',
-             'Signal_Level_Loss']]
+        return raw_df

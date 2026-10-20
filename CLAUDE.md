@@ -8,11 +8,14 @@ aren't obvious from reading the code.
 
 This is one of three related repos sharing infrastructure:
 
-- [EquityScanner](https://github.com/SilverTurtle1/EquityScanner) — equity
-  candle scanner. Same Massive API account as this project.
-- [MarketDataDB](https://github.com/SilverTurtle1/MarketDataDB) — schema for
-  the shared `market_data` Postgres database both this project and
-  EquityScanner write to.
+- EquityScanner — equity candle scanner. Same Massive API account as this
+  project.
+- MarketDataDB — schema for the shared `market_data` Postgres database both
+  this project and EquityScanner write to.
+- ESStrategyResearch — indicator logic (`indicators.py`) and the strategy
+  research/backtests built on it. It was moved out of this repo on purpose:
+  this project is solely about the ES data, so don't add indicator or
+  strategy code back here.
 
 **The Massive API rate limit (5 calls/min, free tier) is shared** across
 whatever uses the key — this project doesn't get its own independent budget
@@ -28,16 +31,13 @@ and `Rest_Test.py` are earlier, unused exploratory scripts against the old
 `polygon` client package; they also make real API calls if run and are kept
 only for reference, not as something to run.
 
-The research/backtest scripts (`candle_signal_backtest.py`,
-`level_interactions.py`, `triple_barrier.py`, `weekly_value_area.py`,
-`halfback_*.py`, `premarket_lime_*.py`, `ib_breakout_test.py`,
-`b_engulfs_a_test.py`, `stacked_confirmation_test.py`, `run_leaderboard.py`)
-read local CSVs only — no network/rate-limit cost — but most lack an
-`if __name__ == "__main__":` guard and run their full analysis immediately
-on `import`, not just when executed directly. Read the code rather than
-importing one of these to "check" it; same lesson learned the hard way in
-EquityScanner (see that repo's CLAUDE.md), just without the live-API cost
-here.
+The remaining research scripts (`level_interactions.py`, `triple_barrier.py`,
+`weekly_value_area.py`, `ib_breakout_test.py`, `b_engulfs_a_test.py`) read local
+CSVs only, so there is no network or rate-limit cost, and each runs its analysis
+only when executed directly (`if __name__ == "__main__":`), so importing one is
+safe. `triple_barrier.py` is a reusable scorer, not a script. Several of them
+hard-code a `BASE` data path from the sandbox session they were written in; point
+it at `output/` before running one.
 
 ## Credentials
 
