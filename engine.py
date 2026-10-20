@@ -355,7 +355,7 @@ class FuturesIntradayScanner:
             logging.error(f"Failed pulling network block for {ticker}: {e}", exc_info=True)
             return df_cache
 
-    def process_and_backtest(self) -> pd.DataFrame:
+    def build_master_series(self) -> pd.DataFrame:
         """Gathers data across all required quarterly contracts, welds them together seamlessly, and saves the master timeline."""
         frames = {}
 

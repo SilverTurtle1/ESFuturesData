@@ -271,7 +271,7 @@ def generate_daily_reports(
 
 if __name__ == "__main__":
     logging.info("Refreshing ES futures data from source before generating reports...")
-    FuturesIntradayScanner().process_and_backtest()
+    FuturesIntradayScanner().build_master_series()
 
     sync_master_csv_to_postgres("output/ES_continuous_master_1m.csv")
 
