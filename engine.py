@@ -4,10 +4,17 @@ import time
 import logging
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from indicators import calculate_custom_tv_indicator
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+PT = "America/Los_Angeles"
+QUARTER_CODES = {3: "H", 6: "M", 9: "U", 12: "Z"}
+ROLL_DAYS_BEFORE_EXPIRATION = 8
+SESSION_OPEN_HOUR_PT = 15
+SEAM_PAD_DAYS = 2
+ROLL_DATA_GAP_DAYS = 7
 
 
 class FuturesIntradayScanner:
@@ -49,67 +56,200 @@ class FuturesIntradayScanner:
 
         return api_key, config.get("start_date"), config.get("end_date"), config.get("analysis_timeframe", "30min")
 
-    def _get_contract_for_date(self, dt: datetime) -> str:
-        """Returns the specific active CME contract code for any given calendar date."""
-        month = dt.month
-        day = dt.day
-        year_last_digit = str(dt.year)[-1]
+    @staticmethod
+    def _third_friday(year: int, month: int) -> date:
+        first = date(year, month, 1)
+        return first + timedelta(days=(4 - first.weekday()) % 7 + 14)
 
-        # Standard operational rollover thresholds (around the 12th of expiration months)
-        if month in [1, 2]:
-            contract_code = "H"
-        elif month == 3:
-            contract_code = "M" if day > 12 else "H"
-        elif month in [4, 5]:
-            contract_code = "M"
-        elif month == 6:
-            contract_code = "U" if day > 12 else "M"
-        elif month in [7, 8]:
-            contract_code = "U"
-        elif month == 9:
-            contract_code = "Z" if day > 12 else "U"
-        elif month in [10, 11]:
-            contract_code = "Z"
-        elif month == 12:
-            if day > 12:
-                contract_code = "H"
-                year_last_digit = str(dt.year + 1)[-1]
-            else:
-                contract_code = "Z"
+    @staticmethod
+    def _session_open(trade_date: date) -> pd.Timestamp:
+        """Open of a trade date's Globex session: 15:00 PT on the previous calendar day."""
+        day = trade_date - timedelta(days=1)
+        return pd.Timestamp(year=day.year, month=day.month, day=day.day, hour=SESSION_OPEN_HOUR_PT, tz=PT)
 
-        return f"ES{contract_code}{year_last_digit}"
+    @staticmethod
+    def _range_bounds(start_str: str, end_str: str):
+        """[start, end) of the configured range: midnight PT of start_date to midnight PT after end_date."""
+        return pd.Timestamp(start_str, tz=PT), pd.Timestamp(end_str, tz=PT) + pd.DateOffset(days=1)
 
     def _build_contract_schedule(self, start_str: str, end_str: str) -> list:
         """
-        Generates a chronological list of required contracts with an intentional
-        2-day overlap on slice boundaries to prevent session gaps caused by
-        futures market evening openings.
+        Returns every contract that could be the front month at some point in [start_date, end_date].
+        The series may leave a contract no earlier than its CME roll date (the Thursday
+        ROLL_DAYS_BEFORE_EXPIRATION days before the third-Friday expiration) and no later than the open
+        of its expiration-day session; the exact moment is driven by volume (see _find_roll_exit), so
+        each contract's window is filled in by _resolve_windows once its bars are fetched. Each contract
+        is fetched from SEAM_PAD_DAYS before the earliest it could be entered through its expiration,
+        so both sides of every possible switch are available.
         """
-        start_dt = pd.to_datetime(start_str)
-        end_dt = pd.to_datetime(end_str)
+        start_ts, end_ts = self._range_bounds(start_str, end_str)
+        start_date = start_ts.date()
+        end_date = pd.Timestamp(end_str).date()
+
+        contracts = []
+        for year in range(start_ts.year - 1, end_ts.year + 2):
+            for month, code in QUARTER_CODES.items():
+                expiration = self._third_friday(year, month)
+                cme_roll_date = expiration - timedelta(days=ROLL_DAYS_BEFORE_EXPIRATION)
+                contracts.append({
+                    "ticker": f"ES{code}{str(year)[-1]}",
+                    "expiration": expiration,
+                    "cme_roll_date": cme_roll_date,
+                    "earliest_exit": self._session_open(cme_roll_date),
+                    "latest_exit": self._session_open(expiration),
+                })
 
         schedule = []
-        current_dt = start_dt
+        for prev, cur in zip(contracts, contracts[1:]):
+            if cur["latest_exit"] <= start_ts or prev["earliest_exit"] >= end_ts:
+                continue
 
-        while current_dt <= end_dt:
-            ticker = self._get_contract_for_date(current_dt)
-            seg_start = current_dt
-
-            while current_dt <= end_dt and self._get_contract_for_date(current_dt) == ticker:
-                current_dt += timedelta(days=1)
-            seg_end = min(current_dt - timedelta(days=1), end_dt)
-
-            # ADD A 2-DAY SEAM PADDING TO PREVENT EVENING SESSION GAPS
-            padded_start = max(seg_start - timedelta(days=2), start_dt)
-            padded_end = min(seg_end + timedelta(days=2), end_dt)
-
+            fetch_start = max((prev["earliest_exit"] - timedelta(days=SEAM_PAD_DAYS)).date(), start_date)
+            fetch_end = min(cur["expiration"], end_date)
             schedule.append({
-                "ticker": ticker,
-                "start": padded_start.strftime("%Y-%m-%d"),
-                "end": padded_end.strftime("%Y-%m-%d")
+                **cur,
+                "start": fetch_start.strftime("%Y-%m-%d"),
+                "end": fetch_end.strftime("%Y-%m-%d"),
             })
 
         return schedule
+
+    @staticmethod
+    def _session_volumes(df: pd.DataFrame) -> pd.Series:
+        """Total volume per Globex trade date (bars at or after 15:00 PT belong to the next day)."""
+        trade_dates = (df.index + pd.to_timedelta((df.index.hour >= 15).astype(int), unit="D")).date
+        return df["Volume"].groupby(trade_dates).sum()
+
+    def _find_roll_exit(self, out_info: dict, in_info: dict, out_df: pd.DataFrame, in_df: pd.DataFrame):
+        """
+        Finds when the series leaves the outgoing contract: the open of the first Globex session, on or
+        after the CME roll date, whose prior full session traded more volume in the incoming contract
+        than the outgoing one. Every session is therefore built from a single contract, and the switch
+        follows where traders actually moved rather than the calendar. If no crossover appears by the
+        expiration-day session, switches there and warns. Returns None when the available data ends
+        before a decision can be made (e.g. the config range ends mid-roll).
+        """
+        label = f"Roll {out_info['ticker']} -> {in_info['ticker']}"
+        out_vol, in_vol = self._session_volumes(out_df), self._session_volumes(in_df)
+        trade_dates = sorted(set(out_vol.index) | set(in_vol.index))
+        data_end = out_df.index.max()
+
+        for prior, trade_date in zip(trade_dates, trade_dates[1:]):
+            if trade_date < out_info["cme_roll_date"] or trade_date > out_info["expiration"]:
+                continue
+
+            exit_ts = self._session_open(trade_date)
+            if exit_ts > data_end:
+                logging.info(f"{label}: no volume crossover yet within the available data; staying on "
+                             f"{out_info['ticker']}.")
+                return None
+
+            if in_vol.get(prior, 0.0) > out_vol.get(prior, 0.0):
+                sessions_after_cme = (trade_date - out_info["cme_roll_date"]).days
+                logging.info(f"{label}: {in_info['ticker']} out-traded {out_info['ticker']} on {prior} "
+                             f"({in_vol.get(prior, 0.0):,.0f} vs {out_vol.get(prior, 0.0):,.0f}); switching at "
+                             f"{exit_ts} ({sessions_after_cme} calendar days after CME roll date "
+                             f"{out_info['cme_roll_date']}).")
+                return exit_ts
+
+        exit_ts = out_info["latest_exit"]
+        if exit_ts > data_end:
+            logging.info(f"{label}: no volume crossover yet within the available data; staying on "
+                         f"{out_info['ticker']}.")
+            return None
+
+        logging.warning(f"{label}: {in_info['ticker']} never out-traded {out_info['ticker']} between the CME "
+                        f"roll date {out_info['cme_roll_date']} and expiration {out_info['expiration']}; forcing "
+                        f"the switch at {exit_ts}.")
+        return exit_ts
+
+    def _resolve_windows(self, frames: dict):
+        """
+        Sets each scheduled contract's exact front-month window (window_start inclusive, window_end
+        exclusive) from the data-driven switch times, clipped to the configured date range. The windows
+        tile the range exactly, so stitching needs no de-duplication to pick a winner at a seam.
+        """
+        start_ts, end_ts = self._range_bounds(self.start_date, self.end_date)
+        schedule = self.contract_schedule
+
+        exits = []
+        for out_info, in_info in zip(schedule, schedule[1:]):
+            out_df, in_df = frames.get(out_info["ticker"]), frames.get(in_info["ticker"])
+            if out_df is None or in_df is None:
+                exit_ts = out_info["earliest_exit"]
+                logging.warning(f"Roll {out_info['ticker']} -> {in_info['ticker']}: missing bars for one side; "
+                                f"falling back to the CME roll date switch at {exit_ts}.")
+            else:
+                exit_ts = self._find_roll_exit(out_info, in_info, out_df, in_df)
+                gap = pd.Timedelta(days=ROLL_DATA_GAP_DAYS)
+                if exit_ts is None and in_df.index.max() > out_df.index.max() + gap:
+                    raise RuntimeError(
+                        f"Roll {out_info['ticker']} -> {in_info['ticker']} can't be decided: {out_info['ticker']} "
+                        f"bars end {out_df.index.max()} but {in_info['ticker']} runs to {in_df.index.max()}. "
+                        f"The {out_info['ticker']} cache looks incomplete; re-run to extend it, or delete "
+                        f"{out_info['ticker']}_raw_1m_bars.csv to rebuild it. Refusing to write a truncated series.")
+            exits.append(end_ts if exit_ts is None else exit_ts)
+        exits.append(end_ts)
+
+        window_start = start_ts
+        for info, exit_ts in zip(schedule, exits):
+            window_end = min(exit_ts, end_ts)
+            info["window_start"], info["window_end"] = window_start, window_end
+            window_start = max(window_end, window_start)
+
+    def _request_bars(self, ticker: str, api_start: str, api_end: str) -> list:
+        """Pages through the Massive futures aggregates endpoint for one date range, newest bars first."""
+        # INCLUSIVE EXTENSION TO CAPTURE ABSOLUTE END OF LAST SESSION
+        api_end_inclusive = (pd.to_datetime(api_end) + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        logging.info(f"Querying Massive API for {ticker} ({api_start} to {api_end_inclusive})...")
+        url = f"https://api.massive.com/futures/v1/aggs/{ticker}"
+        all_bars = []
+        batch_limit = 3000
+
+        params = {
+            "resolution": "1min",
+            "limit": batch_limit,
+            "sort": "window_start.desc",
+            "window_start.gte": api_start,
+            "window_start.lte": api_end_inclusive,
+            "apiKey": self.api_key,
+        }
+
+        for i in range(100):
+            request_num = i + 1
+            # Increment the persistent cross-ticker counter
+            self.global_request_count += 1
+
+            logging.info(
+                f"Firing API Request {request_num} (Global: {self.global_request_count}) for {ticker} delta patch...")
+
+            response = requests.get(url, params=params)
+            if response.status_code != 200:
+                logging.error(f"API Error on request {request_num}: {response.text}")
+                break
+
+            res_data = response.json()
+            bars = res_data.get("data", res_data.get("results", []))
+            if not bars:
+                break
+
+            all_bars.extend(bars)
+            if len(bars) < batch_limit:
+                logging.info(f"Reached absolute edge of available historical data for {ticker}.")
+                break
+
+            params["window_start.lt"] = bars[-1]["window_start"]
+
+            # USE GLOBAL COUNTER TO PRESERVE COOL-DOWNS ACROSS TICKERS
+            if self.global_request_count % 5 == 0:
+                logging.warning(
+                    "Free Tier Throttle Guard active (Global Cap). Pausing 60s to safely reset clocks...")
+                time.sleep(60)
+            else:
+                time.sleep(2)
+
+        return all_bars
 
     def _fetch_single_contract_bars(self, contract_info: dict) -> pd.DataFrame:
         """Handles fetching, caching, and extending data for a single specific contract."""
@@ -147,65 +287,22 @@ class FuturesIntradayScanner:
                 logging.warning(f"Error reading cache for {ticker}: {e}. Rebuilding...")
                 cache_exists = False
 
-        # Determine exact missing API targets
-        api_start = req_start
-        api_end = req_end
+        # Determine exact missing API ranges: the head and/or the tail of the cache can be short
         if cache_exists and not df_cache.empty:
+            api_ranges = []
             if target_start_date < cache_start_date:
-                api_end = (cache_start_date + timedelta(days=1)).strftime("%Y-%m-%d")
-            elif target_end_date > cache_end_date:
-                api_start = (cache_end_date - timedelta(days=1)).strftime("%Y-%m-%d")
+                api_ranges.append((req_start, (cache_start_date + timedelta(days=1)).strftime("%Y-%m-%d")))
+            if target_end_date > cache_end_date:
+                api_ranges.append(((cache_end_date - timedelta(days=1)).strftime("%Y-%m-%d"), req_end))
+        else:
+            api_ranges = [(req_start, req_end)]
 
-        # INCLUSIVE EXTENSION TO CAPTURE ABSOLUTE END OF LAST SESSION
-        api_end_inclusive = (pd.to_datetime(api_end) + timedelta(days=1)).strftime("%Y-%m-%d")
-
-        logging.info(f"Querying Massive API for {ticker} ({api_start} to {api_end_inclusive})...")
         try:
-            url = f"https://api.massive.com/futures/v1/aggs/{ticker}"
             all_bars = []
-            batch_limit = 3000
-
-            params = {
-                "resolution": "1min",
-                "limit": batch_limit,
-                "sort": "window_start.desc",
-                "window_start.gte": api_start,
-                "window_start.lte": api_end_inclusive,
-                "apiKey": self.api_key,
-            }
-
-            for i in range(100):
-                request_num = i + 1
-                # Increment the persistent cross-ticker counter
-                self.global_request_count += 1
-
-                logging.info(
-                    f"Firing API Request {request_num} (Global: {self.global_request_count}) for {ticker} delta patch...")
-
-                response = requests.get(url, params=params)
-                if response.status_code != 200:
-                    logging.error(f"API Error on request {request_num}: {response.text}")
-                    break
-
-                res_data = response.json()
-                bars = res_data.get("data", res_data.get("results", []))
-                if not bars:
-                    break
-
-                all_bars.extend(bars)
-                if len(bars) < batch_limit:
-                    logging.info(f"Reached absolute edge of available historical data for {ticker}.")
-                    break
-
-                params["window_start.lt"] = bars[-1]["window_start"]
-
-                # USE GLOBAL COUNTER TO PRESERVE COOL-DOWNS ACROSS TICKERS
-                if self.global_request_count % 5 == 0:
-                    logging.warning(
-                        "Free Tier Throttle Guard active (Global Cap). Pausing 60s to safely reset clocks...")
-                    time.sleep(60)
-                else:
+            for n, (api_start, api_end) in enumerate(api_ranges):
+                if n:
                     time.sleep(2)
+                all_bars.extend(self._request_bars(ticker, api_start, api_end))
 
             if not all_bars and df_cache.empty:
                 return pd.DataFrame()
@@ -250,18 +347,31 @@ class FuturesIntradayScanner:
 
     def process_and_backtest(self) -> pd.DataFrame:
         """Gathers data across all required quarterly contracts, welds them together seamlessly, and runs indicators."""
-        master_raw_segments = []
+        frames = {}
 
-        # Pull each contract sequentially for its specific high-volume slice window
+        # Pull each contract sequentially, from before its earliest possible entry through its expiration
         for contract_info in self.contract_schedule:
             logging.info(f"Processing sequence slice for active contract: {contract_info['ticker']}")
             df_segment = self._fetch_single_contract_bars(contract_info)
             if not df_segment.empty:
-                master_raw_segments.append(df_segment)
+                frames[contract_info["ticker"]] = df_segment
 
-        if not master_raw_segments:
+        if not frames:
             logging.error("No valid transactional blocks could be sourced.")
             return pd.DataFrame()
+
+        # Work out where each roll happens from the fetched volumes, then trim every contract to its
+        # exact front-month window so the switch time is explicit rather than a side effect of which
+        # duplicate bars survive de-duplication
+        self._resolve_windows(frames)
+        master_raw_segments = []
+        for info in self.contract_schedule:
+            df = frames.get(info["ticker"])
+            if df is None:
+                continue
+            trimmed = df[(df.index >= info["window_start"]) & (df.index < info["window_end"])]
+            if not trimmed.empty:
+                master_raw_segments.append(trimmed)
 
         # Stitch all high-volume contract blocks together into one continuous line
         raw_df = pd.concat(master_raw_segments)
